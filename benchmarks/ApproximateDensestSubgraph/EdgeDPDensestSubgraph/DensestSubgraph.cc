@@ -38,19 +38,24 @@ namespace {
 
 template <class Graph>
 double DensestSubgraph_runner(Graph& G, commandLine P) {
-  double eps = P.getOptionDoubleValue("-eps", 0.001);
+  double eps = P.getOptionDoubleValue("-eps", 0.01);
+  double z = P.getOptionDoubleValue("-z", 0.2);
+  double nu = P.getOptionDoubleValue("-nu", 1. / 12.);
   std::cout << "### Application: DensestSubgraph" << std::endl;
   std::cout << "### Graph: " << P.getArgument(0) << std::endl;
   std::cout << "### Threads: " << num_workers() << std::endl;
   std::cout << "### n: " << G.n << std::endl;
   std::cout << "### m: " << G.m << std::endl;
   std::cout << "### Params: -eps = " << eps << std::endl;
+  std::cout << "###         -z = " << z << std::endl;
+  std::cout << "###         -nu = " << nu << std::endl;
   std::cout << "### ------------------------------------" << std::endl;
   assert(P.getOption("-s"));
 
   timer t;
   t.start();
-  WorkEfficientDensestSubgraph(G, eps);
+  // WorkEfficientDensestSubgraph(G, eps);
+  EdgeDPDensestSubgraph(G, z, nu, eps);
   double tt = t.stop();
 
   std::cout << "### Running Time: " << tt << std::endl;

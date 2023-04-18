@@ -23,143 +23,151 @@
 #include "gbbs/edge_map_reduce.h"
 #include "gbbs/gbbs.h"
 
+#include <set>
+
+#define C_0 1. / 20.
+#define C_1 1
+#define C_2 1
+#define C 1
+
+#define max(a, b) ((a) > (b) ? (a) : (b))
+#define min(a, b) ((a) < (b) ? (a) : (b))
+
 namespace gbbs {
+
+struct edge {
+  size_t u;
+  size_t v;
+  size_t load;
+
+  edge(size_t _u, size_t _v, size_t _load) : u(_u), v(_v), load(_load) {}
+  edge(size_t _u, size_t _v) : u(_u), v(_v), load(0) {}
+
+  void increase_load(size_t addtl_load) { load += addtl_load; }
+};
+
+/* 
+Determines how many edges each vertex has which are connected to another vertex in the set of vertices, sums, then divides by the number of vertices. This does not seem to be the traditional definition of density, but other implementations in this repo seem to use it.
+*/
 template <class Graph>
-double WorkEfficientDensestSubgraph(Graph& G, double epsilon = 0.001) {
-  const size_t n = G.n;
-  auto em = hist_table<uintE, uintE>(std::make_tuple(UINT_E_MAX, 0),
-                                     (size_t)G.m / 50);
-
-  double density_multiplier =
-      (1 + epsilon);  // note that this is not (2+eps), since the density we
-                      // compute includes edges in both directions already.
-
-  auto D = sequence<uintE>::from_function(
-      n, [&](size_t i) { return G.get_vertex(i).out_degree(); });
-  //  auto vertices_remaining = sequence<uintE>(n, [&] (size_t i) { return i;
-  //  });
-  auto vertices_remaining =
-      parlay::delayed_seq<uintE>(n, [&](size_t i) { return i; });
-  auto alive = sequence<bool>::from_function(n, [&](size_t i) { return true; });
-
-  size_t round = 1;
-  sequence<uintE> A;
-  size_t remaining_offset = 0;
-  size_t num_vertices_remaining = n;
-
-  double max_density = 0.0;
-
-  // First round
-  {
-    size_t edges_remaining = G.m;
-    // Update density
-    double current_density =
-        ((double)edges_remaining) / ((double)vertices_remaining.size());
-    double target_density = (density_multiplier * ((double)edges_remaining)) /
-                            ((double)vertices_remaining.size());
-    debug(std::cout << "Target density on round " << round << " is "
-                    << target_density << " erm = " << edges_remaining
-                    << " vrm = " << vertices_remaining.size() << std::endl;
-          std::cout << "Current density on round " << round << " is "
-                    << current_density << std::endl;);
-    if (current_density > max_density) {
-      max_density = current_density;
+double graphDensity(Graph &G, std::set<size_t> vertices){
+  int relevant_edges = 0;
+  for (size_t v : vertices){
+    auto neighbors = G.get_vertex(v).out_neighbors();
+    for (size_t i = 0; i < G.get_vertex(v).out_degree(); i++){
+      if (vertices.find(std::get<0>(neighbors.get_ith_neighbor(i))) != vertices.end()){
+        relevant_edges++;
+      }
     }
-
-    auto keep_seq = parlay::delayed_seq<bool>(
-        n, [&](size_t i) { return !(D[i] <= target_density); });
-
-    auto splits = parlay::split_two(vertices_remaining, keep_seq);
-    A = std::move(splits.first);
-    size_t num_removed = splits.second;
-    debug(std::cout << "removing " << num_removed << " vertices" << std::endl;);
-
-    auto removed = sequence<uintE>::uninitialized(num_removed);
-    parallel_for(0, num_removed, [&](size_t i) {
-      auto v = A[i];
-      removed[i] = v;
-      alive[v] = false;
-    });
-    auto vs = vertexSubset(n, std::move(removed));
-
-    auto cond_f = [&](const uintE& u) { return alive[u]; };
-
-    auto apply_f = [&](const std::tuple<uintE, uintE>& p)
-        -> const std::optional<std::tuple<uintE, uintE> > {
-          uintE v = std::get<0>(p), edgesRemoved = std::get<1>(p);
-          D[v] -= edgesRemoved;
-          return std::nullopt;
-        };
-
-    nghCount(G, vs, cond_f, apply_f, em, no_output);
-
-    round++;
-    remaining_offset = num_removed;
-    num_vertices_remaining -= num_removed;
   }
-
-  while (num_vertices_remaining > 0) {
-    auto vtxs_remaining =
-        A.cut(remaining_offset, remaining_offset + num_vertices_remaining);
-
-    auto degree_f = [&](size_t i) {
-      uintE v = vtxs_remaining[i];
-      return static_cast<size_t>(D[v]);
-    };
-    auto degree_seq =
-        parlay::delayed_seq<size_t>(vtxs_remaining.size(), degree_f);
-    long edges_remaining = parlay::reduce(degree_seq);
-
-    // Update density
-    double current_density =
-        ((double)edges_remaining) / ((double)vtxs_remaining.size());
-    double target_density = (density_multiplier * ((double)edges_remaining)) /
-                            ((double)vtxs_remaining.size());
-    debug(std::cout << "Target density on round " << round << " is "
-                    << target_density << " erm = " << edges_remaining
-                    << " vrm = " << vtxs_remaining.size() << std::endl;
-          std::cout << "Current density on round " << round << " is "
-                    << current_density << std::endl;);
-    if (current_density > max_density) {
-      max_density = current_density;
-    }
-
-    auto keep_seq = parlay::delayed_seq<bool>(
-        vtxs_remaining.size(),
-        [&](size_t i) { return !(D[vtxs_remaining[i]] <= target_density); });
-
-    auto split_vtxs_m = parlay::split_two(vtxs_remaining, keep_seq);
-    A = std::move(split_vtxs_m.first);
-    size_t num_removed = split_vtxs_m.second;
-    debug(std::cout << "removing " << num_removed << " vertices" << std::endl;);
-
-    auto removed = sequence<uintE>::uninitialized(num_removed);
-    parallel_for(0, num_removed, [&](size_t i) {
-      auto v = A[i];
-      alive[v] = false;
-      removed[i] = v;
-    });
-    auto vs = vertexSubset(n, std::move(removed));
-
-    num_vertices_remaining -= num_removed;
-    if (num_vertices_remaining > 0) {
-      auto apply_f = [&](const std::tuple<uintE, uintE>& p)
-          -> const std::optional<std::tuple<uintE, uintE> > {
-            uintE v = std::get<0>(p), edgesRemoved = std::get<1>(p);
-            D[v] -= edgesRemoved;
-            return std::nullopt;
-          };
-
-      auto cond_f = [&](const uintE& u) { return alive[u]; };
-      nghCount(G, vs, cond_f, apply_f, em, no_output);
-    }
-
-    round++;
-    remaining_offset = num_removed;
-  }
-
-  std::cout << "### Density of (2(1+\eps))-Densest Subgraph is: " << max_density
-            << std::endl;
-  return max_density;
+  return ((double)relevant_edges) / ((double)vertices.size());
 }
+
+template <class Graph>
+double EdgeDPDensestSubgraph(Graph& G, double density, double nu, double epsilon){
+  const size_t n = G.n;
+  // const size_t m = G.m;
+  const double T = C_0 * std::log(n) / (std::pow(nu, 3));
+
+  std::cout << "T = " << T << std::endl;
+
+  // geometric distributions
+  std::default_random_engine generator;
+  std::geometric_distribution<size_t> x_distribution(epsilon / (6 * T * std::log(n) / std::log(1 + nu)));
+  std::geometric_distribution<size_t> y_distribution(epsilon / (3 * T * (4 * T + 1) * std::log(n) / std::log(1 + nu)));
+  std::geometric_distribution<size_t> z_distribution(epsilon / (6 * T * (4 * T + 1) * std::log(n) / std::log(1 + nu)));
+
+  // initialize a sequence of sequences to store pointers to edge objects for each vertex
+  parlay::sequence<parlay::sequence<edge*>> edge_maps = parlay::tabulate(n, [&](size_t i) {
+    return parlay::sequence<edge*>();
+  });
+  // initialize the edge objects
+  for (size_t v = 0; v < n; v++){
+    auto neighbors = G.get_vertex(v).out_neighbors();
+    for (size_t i = 0; i < G.get_vertex(v).out_degree(); i++){
+      size_t u = std::get<0>(neighbors.get_ith_neighbor(i));
+      if (u < v){
+        edge *e = new edge(u, v);
+        edge_maps[v].push_back(e);
+        edge_maps[u].push_back(e);
+      }
+    }
+  }
+
+
+  if (density == 0.) { // lines 6-7 of algorithm 7
+    return 0.;
+  }
+
+  for(size_t t = 1; t <= T; t++){ 
+    // std::cout << "t = " << t << std::endl;
+
+    auto X = parlay::tabulate(n, [&](size_t i) { 
+      return x_distribution(generator);
+    });
+
+    parlay::sequence<parlay::sequence<int>> alphas(n); // this might be a memory leak
+
+    for (size_t v = 0; v < n; v++){
+      auto edges = edge_maps[v];
+      // sort edges by load, breaking ties by other vertex id
+      edges = parlay::sort(edges, [&](edge* e1, edge* e2) {
+        if (e1->load == e2->load){
+          size_t a = e1->u == v ? e1->v : e1->u;
+          size_t b = e2->u == v ? e2->v : e2->u;
+          return a < b;
+        } else {
+          return e1->load < e2->load;
+        }
+      });
+      size_t max_2_alpha = min(std::ceil(density / 2) - 1 + X[v], edges.size());
+      auto alpha = parlay::tabulate(edges.size(), [&](size_t i) {
+        return i < max_2_alpha ? 2 : 0;
+      });
+      alphas[v] = alpha;
+    }
+    
+    for (size_t load = 0; load < 4*T; load++){
+      std::set<size_t> V = std::set<size_t>();
+
+      auto Z = parlay::tabulate(n, [&](size_t i) { 
+        return z_distribution(generator);
+      });
+
+      for (size_t v = 0; v < n; v++){
+        int qualifying_edges = 0;
+        auto edges = edge_maps[v];
+        for(auto e : edges){
+          if (e->load <= load){
+            qualifying_edges++;
+          }
+        }
+        if (qualifying_edges >= Z[v] + std::ceil(density / 2) - (C_1 * std::pow(std::log(n), 4)) / epsilon){
+          V.insert(v);
+        }
+      }
+
+      auto Y = y_distribution(generator);
+
+      // if the subgraph induced by the vertices in V is sufficiently dense, return it
+      double current_density = graphDensity(G, V);
+
+      if (current_density >= density + Y - (C_2 * std::pow(std::log(n), 4)) / epsilon){
+        std::cout << "density = " << current_density << std::endl;
+        return current_density;
+      }
+    }
+    // update the load of each edge
+    for (size_t v = 0; v < n; v++){
+      auto edges = edge_maps[v];
+      for (uint i = 0; i < edges.size(); i++){
+        edges[i]->increase_load(X[v] + alphas[v][i]);
+      }
+    }
+  }
+
+  std::cout << "no subgraph found" << std::endl;
+  return 0.;
+}
+
 }  // namespace gbbs
